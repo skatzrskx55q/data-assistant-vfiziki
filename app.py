@@ -2,7 +2,7 @@ import streamlit as st
 from utils import load_all_excels, semantic_search, keyword_search
 
 st.set_page_config(page_title="Semantic Assistant", layout="centered")
-st.title("🤖 Semantic Assistant")
+st.title("🤖 Проверка фраз")
 
 @st.cache_data
 def get_data():

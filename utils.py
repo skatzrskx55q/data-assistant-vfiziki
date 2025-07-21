@@ -152,12 +152,20 @@ def semantic_search(query, df, top_k=5, threshold=0.5):
     phrase_embs = df.attrs["phrase_embs"]
 
     sims = util.pytorch_cos_sim(query_emb, phrase_embs)[0]
+
+    # Собираем все результаты выше порога
     results = [
         (float(score), df.iloc[idx]["phrase_full"], df.iloc[idx]["topics"], df.iloc[idx]["comment"])
         for idx, score in enumerate(sims) if float(score) >= threshold
     ]
+
+    # Удаляем дубликаты по phrase_full, оставляя максимальный score
+    results = deduplicate_results(results)
+
+    # Сортируем и берём top_k
     results = sorted(results, key=lambda x: x[0], reverse=True)[:top_k]
-    return deduplicate_results(results)
+
+    return results
 
 def keyword_search(query, df):
     query_proc  = preprocess(query)

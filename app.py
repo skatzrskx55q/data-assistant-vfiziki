@@ -16,7 +16,9 @@ df = get_data()
 
 # 🔘 Все уникальные тематики
 all_topics = sorted({topic for topics in df['topics'] for topic in topics})
-selected_topics = st.multiselect("Фильтр по тематикам (независимо от поиска):", all_topics)
+topic_query = st.text_input("Поиск по тематикам:")
+filtered_topics = [t for t in all_topics if topic_query.lower() in t.lower()]
+selected_topics = st.multiselect("Выберите тематики:", filtered_topics)
 
 # 📂 Фразы по выбранным тематикам
 if selected_topics:

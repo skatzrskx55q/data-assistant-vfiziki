@@ -1,3 +1,4 @@
+# utils.py
 import pandas as pd
 import requests
 import re
@@ -5,20 +6,19 @@ from io import BytesIO
 from sentence_transformers import SentenceTransformer, util
 import pymorphy2
 import functools
+import os
 
 # ---------- модель и морфологический разбор ----------
 
 @functools.lru_cache(maxsize=1)
 def get_model():
-    import os
-    import zipfile
-    import gdown
-
     model_path = "fine_tuned_model"
     model_zip  = "fine_tuned_model.zip"
     file_id    = "1RR15OMLj9vfSrVa1HN-dRU-4LbkdbRRf"  # при необходимости замените
 
     if not os.path.exists(model_path):
+        import gdown
+        import zipfile
         gdown.download(f"https://drive.google.com/uc?id={file_id}", model_zip, quiet=False)
         with zipfile.ZipFile(model_zip, 'r') as zf:
             zf.extractall(model_path)
@@ -41,8 +41,10 @@ def lemmatize(word):
 def lemmatize_cached(word):
     return lemmatize(word)
 
-SYNONYM_GROUPS = []
-
+SYNONYM_GROUPS = [
+["зп", "зарплатный", "зарплатная"],
+["наличные", "наличными", "наличка"]
+]
 SYNONYM_DICT = {}
 for group in SYNONYM_GROUPS:
     lemmas = {lemmatize(w.lower()) for w in group}
@@ -50,7 +52,7 @@ for group in SYNONYM_GROUPS:
         SYNONYM_DICT[lemma] = lemmas
 
 GITHUB_CSV_URLS = [
-    "https://raw.githubusercontent.com/skatzrskx55q/data-assistant-vfiziki/main/data6.xlsx",
+    "https://raw.githubusercontent.com/skatzrskx55q/data-assistant-vfizik/main/data6.xlsx",
     "https://raw.githubusercontent.com/skatzrsk/semantic-assistant/main/data21.xlsx",
     "https://raw.githubusercontent.com/skatzrsk/semantic-assistant/main/data31.xlsx"
 ]
@@ -77,41 +79,41 @@ def split_by_slash(phrase: str):
             parts.append(segment)
     return [p for p in parts if p]
 
-# ---------- загрузка данных ----------
-
-def load_excel(url):
+def load_excel_or_csv(url):
     resp = requests.get(url)
     if resp.status_code != 200:
         raise ValueError(f"Ошибка загрузки {url}")
 
-    df = pd.read_excel(BytesIO(resp.content))
+    if url.endswith(".csv"):
+        df = pd.read_csv(BytesIO(resp.content))
+    else:
+        df = pd.read_excel(BytesIO(resp.content))
+
     topic_cols = [c for c in df.columns if c.lower().startswith("topics")]
     if not topic_cols:
         raise KeyError("Не найдены колонки topics")
 
-    df["topics"]      = df[topic_cols].astype(str).agg(lambda x: [v for v in x if v and v != "nan"], axis=1)
+    df["topics"] = df[topic_cols].astype(str).agg(lambda x: [v for v in x if v and v != "nan"], axis=1)
     df["phrase_full"] = df["phrase"]
     df["phrase_list"] = df["phrase"].apply(split_by_slash)
-    df                = df.explode("phrase_list", ignore_index=True)
-    df["phrase"]      = df["phrase_list"]
+    df = df.explode("phrase_list", ignore_index=True)
+    df["phrase"] = df["phrase_list"]
     df["phrase_proc"] = df["phrase"].apply(preprocess)
     df["phrase_lemmas"] = df["phrase_proc"].apply(
         lambda t: {lemmatize_cached(w) for w in re.findall(r"\w+", t)}
     )
-
-    model = get_model()
-    df.attrs["phrase_embs"] = model.encode(df["phrase_proc"].tolist(), convert_to_tensor=True)
 
     if "comment" not in df.columns:
         df["comment"] = ""
 
     return df[["phrase", "phrase_proc", "phrase_full", "phrase_lemmas", "topics", "comment"]]
 
+
 def load_all_excels():
     dfs = []
     for url in GITHUB_CSV_URLS:
         try:
-            dfs.append(load_excel(url))
+            dfs.append(load_excel_or_csv(url))
         except Exception as e:
             print(f"⚠️ Ошибка с {url}: {e}")
     if not dfs:
@@ -131,7 +133,7 @@ def _phrase_full_of(item):
 def deduplicate_results(results):
     """
     Удаляет дубликаты по phrase_full, сохраняя кортеж в исходном формате
-    (4‑элемента для semantic, 3‑элемента для keyword) и оставляя
+    (4-элемента для semantic, 3-элемента для keyword) и оставляя
     наиболее высокий score при коллизии.
     """
     best = {}
@@ -176,7 +178,7 @@ def keyword_search(query, df):
 
     return deduplicate_results(matched)
 
-# ---------- фильтрация ----------
+# ---------- фильтрация (если понадобится) ----------
 
 def filter_by_topics(results, selected_topics):
     if not selected_topics:

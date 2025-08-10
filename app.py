@@ -4,6 +4,7 @@ import datetime
 import pandas as pd
 import os
 import csv
+import torch  # <-- используется для нарезки тензора эмбеддингов
 
 st.set_page_config(page_title="Проверка фраз ФЛ", layout="centered")
 st.title("🤖 Проверка фраз")
@@ -29,6 +30,7 @@ def log_query(query, semantic_count, keyword_count, status):
 def get_data():
     df = load_all_excels()
     model = get_model()
+    # рассчитываем эмбеддинги для полной таблицы и сохраняем в attrs
     df.attrs['phrase_embs'] = model.encode(df['phrase_proc'].tolist(), convert_to_tensor=True)
     return df
 
@@ -37,6 +39,7 @@ df = get_data()
 # 🔘 Все уникальные тематики
 all_topics = sorted({topic for topics in df['topics'] for topic in topics})
 selected_topics = st.multiselect("Фильтр по тематикам (независимо от поиска):", all_topics)
+filter_search_by_topics = st.checkbox("Искать только в выбранных тематиках", value=False)
 
 # 📂 Фразы по выбранным тематикам
 if selected_topics:
@@ -60,51 +63,87 @@ query = st.text_input("Введите ваш запрос:")
 
 if query:
     try:
-        results = semantic_search(query, df)
-        exact_results = keyword_search(query, df)
+        # Если включен фильтр, сужаем датафрейм для поиска
+        search_df = df
+        if filter_search_by_topics and selected_topics:
+            mask = df['topics'].apply(lambda topics: any(t in selected_topics for t in topics))
+            search_df = df[mask]
 
-        # Запись в лог
-        log_query(
-            query,
-            semantic_count=len(results),
-            keyword_count=len(exact_results),
-            status="найдено" if results or exact_results else "не найдено"
-        )
+            # Подрезаем/назначаем эмбеддинги для search_df, чтобы они соответствовали строкам
+            # Берём полный тензор из оригинального df.attrs['phrase_embs'] и индексируем его по индексам search_df
+            full_embs = df.attrs.get('phrase_embs', None)
+            if full_embs is not None:
+                try:
+                    indices = search_df.index.tolist()
+                    if isinstance(full_embs, torch.Tensor):
+                        if indices:
+                            # индексируем тензор по оригинальным индексам (они совпадают с порядком построения)
+                            search_df.attrs['phrase_embs'] = full_embs[indices]
+                        else:
+                            # пустой набор — создаём пустой тензор нужной ширины
+                            search_df.attrs['phrase_embs'] = full_embs.new_empty((0, full_embs.size(1)))
+                    else:
+                        # если это numpy array или похожее
+                        import numpy as np
+                        arr = np.asarray(full_embs)
+                        search_df.attrs['phrase_embs'] = arr[indices]
+                except Exception:
+                    # В крайнем случае — пересчитаем эмбеддинги для search_df (медленнее, но безопасно)
+                    model = get_model()
+                    if not search_df.empty:
+                        search_df.attrs['phrase_embs'] = model.encode(search_df['phrase_proc'].tolist(), convert_to_tensor=True)
+                    else:
+                        search_df.attrs['phrase_embs'] = None
 
-        if results:
-            st.markdown("### 🔍 Результаты умного поиска:")
-            for score, phrase_full, topics, comment in results:
-                with st.container():
-                    st.markdown(
-                        f"""<div style="border: 1px solid #e0e0e0; border-radius: 12px; padding: 16px; margin-bottom: 12px; background-color: #f9f9f9; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
-                            <div style="font-size: 18px; font-weight: 600; color: #333;">🧠 {phrase_full}</div>
-                            <div style="margin-top: 4px; font-size: 14px; color: #666;">🔖 Тематики: <strong>{', '.join(topics)}</strong></div>
-                            <div style="margin-top: 2px; font-size: 13px; color: #999;">🎯 Релевантность: {score:.2f}</div>
-                        </div>""",
-                        unsafe_allow_html=True
-                    )
-                    if comment and str(comment).strip().lower() != "nan":
-                        with st.expander("💬 Комментарий", expanded=False):
-                            st.markdown(comment)
+        # Проверка на пустой результат
+        if search_df.empty:
+            st.warning("Нет данных для поиска по выбранным тематикам.")
         else:
-            st.warning("Совпадений не найдено в умном поиске.")
+            results = semantic_search(query, search_df)
+            exact_results = keyword_search(query, search_df)
 
-        if exact_results:
-            st.markdown("### 🧷 Точный поиск:")
-            for phrase, topics, comment in exact_results:
-                with st.container():
-                    st.markdown(
-                        f"""<div style="border: 1px solid #e0e0e0; border-radius: 12px; padding: 16px; margin-bottom: 12px; background-color: #f9f9f9; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
-                            <div style="font-size: 18px; font-weight: 600; color: #333;">📌 {phrase}</div>
-                            <div style="margin-top: 4px; font-size: 14px; color: #666;">🔖 Тематики: <strong>{', '.join(topics)}</strong></div>
-                        </div>""",
-                        unsafe_allow_html=True
-                    )
-                    if comment and str(comment).strip().lower() != "nan":
-                        with st.expander("💬 Комментарий", expanded=False):
-                            st.markdown(comment)
-        else:
-            st.info("Ничего не найдено в точном поиске.")
+            # Запись в лог
+            log_query(
+                query,
+                semantic_count=len(results),
+                keyword_count=len(exact_results),
+                status="найдено" if results or exact_results else "не найдено"
+            )
+
+            if results:
+                st.markdown("### 🔍 Результаты умного поиска:")
+                for score, phrase_full, topics, comment in results:
+                    with st.container():
+                        st.markdown(
+                            f"""<div style="border: 1px solid #e0e0e0; border-radius: 12px; padding: 16px; margin-bottom: 12px; background-color: #f9f9f9; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
+                                <div style="font-size: 18px; font-weight: 600; color: #333;">🧠 {phrase_full}</div>
+                                <div style="margin-top: 4px; font-size: 14px; color: #666;">🔖 Тематики: <strong>{', '.join(topics)}</strong></div>
+                                <div style="margin-top: 2px; font-size: 13px; color: #999;">🎯 Релевантность: {score:.2f}</div>
+                            </div>""",
+                            unsafe_allow_html=True
+                        )
+                        if comment and str(comment).strip().lower() != "nan":
+                            with st.expander("💬 Комментарий", expanded=False):
+                                st.markdown(comment)
+            else:
+                st.warning("Совпадений не найдено в умном поиске.")
+
+            if exact_results:
+                st.markdown("### 🧷 Точный поиск:")
+                for phrase, topics, comment in exact_results:
+                    with st.container():
+                        st.markdown(
+                            f"""<div style="border: 1px solid #e0e0e0; border-radius: 12px; padding: 16px; margin-bottom: 12px; background-color: #f9f9f9; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
+                                <div style="font-size: 18px; font-weight: 600; color: #333;">📌 {phrase}</div>
+                                <div style="margin-top: 4px; font-size: 14px; color: #666;">🔖 Тематики: <strong>{', '.join(topics)}</strong></div>
+                            </div>""",
+                            unsafe_allow_html=True
+                        )
+                        if comment and str(comment).strip().lower() != "nan":
+                            with st.expander("💬 Комментарий", expanded=False):
+                                st.markdown(comment)
+            else:
+                st.info("Ничего не найдено в точном поиске.")
 
     except Exception as e:
         st.error(f"Ошибка при обработке запроса: {e}")

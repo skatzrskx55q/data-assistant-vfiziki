@@ -2,6 +2,7 @@ import streamlit as st
 from utils import load_all_excels, semantic_search, keyword_search, get_model
 import torch  # для работы с тензорами
 
+st.set_page_config(page_title="Проверка фраз ФЛ", layout="centered")
 st.title("🤖 Проверка фраз")
 
 @st.cache_data
